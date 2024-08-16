@@ -244,18 +244,28 @@ pub fn enrich_triage_info(opt: &ReportOptions, triage_result: &GdbTriageResult) 
     })
 }
 
+// Helper function to cap string length
+fn cap_string(s: String, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let mut result = s.into_bytes();
+        result.truncate(max_bytes);
+        String::from_utf8_lossy(&result).into_owned()
+    }
+}
+
 fn build_target_output(opt: &ReportOptions, child: &GdbChildOutput, sanitizer_reports: &Option<Vec<SanitizerReport>>) -> EnrichedTargetOutput {
     let stderr = if let Some(ref reports) = sanitizer_reports {
         // TODO: multiple reports
         if let Some(report) = reports.get(0) {
             child.stderr.replace(&report.body, &format!("<Replaced {} Report>", report.name_prefer_short()))
         } else {
-            child.stderr.to_string()
+            cap_string(child.stderr.to_string(), 32_000)
         }
     } else {
-        child.stderr.to_string()
+        cap_string(child.stderr.to_string(), 32_000)
     };
-
     let stdout = if opt.child_output_lines > 0 {
         util::tail_string(&child.stdout, opt.child_output_lines).join("\n")
     } else {
