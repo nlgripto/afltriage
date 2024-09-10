@@ -986,6 +986,7 @@ fn main_wrapper() -> i32 {
                         if let Some(child_value) = report_obj.get_mut("child") {
                         if let Value::Object(child_obj) = child_value {
                         child_obj.remove("stderr");
+                        child_obj.remove("stdout");
             }
         }
     }
