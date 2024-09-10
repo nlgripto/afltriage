@@ -31,13 +31,13 @@
 //! create a dedicated PTY for GDB.
 use serde::{Deserialize, Serialize};
 use std::io::{ErrorKind, Write};
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::os::unix::process::ExitStatusExt;
 
-use crate::util::shell_join;
-use crate::process;
 use crate::platform::linux::signal_to_string;
+use crate::process;
+use crate::util::shell_join;
 
 #[doc(hidden)]
 /// The built-in GDBTriage python script
@@ -280,6 +280,21 @@ pub struct GdbChildOutput {
     pub stdout: String,
     pub stderr: String,
 }
+// Create a new struct for serialization that excludes stderr
+#[derive(Serialize)]
+struct GdbChildOutputRawReport {
+    stdout: String,
+    // Include other fields you want in the report, but omit stderr
+}
+
+impl From<GdbChildOutput> for GdbChildOutputRawReport {
+    fn from(child: GdbChildOutput) -> Self {
+        GdbChildOutputRawReport {
+            stdout: child.stdout,
+            // Copy other fields as needed
+        }
+    }
+}
 
 /// What type of GDBTriage error occurred
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -456,7 +471,11 @@ impl GdbTriager {
         let output = match process::execute_capture_output(&self.gdb_path, &gdb_args) {
             Ok(o) => o,
             Err(e) => {
-                log::error!("Failed to execute specified GDB '{}': {}", &self.gdb_path, e);
+                log::error!(
+                    "Failed to execute specified GDB '{}': {}",
+                    &self.gdb_path,
+                    e
+                );
                 return false;
             }
         };
@@ -512,72 +531,90 @@ impl GdbTriager {
             // GDB overwrites args in the format (damn you)
             // Using this version of run uses the shell to run the command.
             // Not ideal, but since we don't have a clean TTY for the target, this will have to do
-            Some(file) => format!("run {} < {}",
-                    shell_join(&prog_args[1..]),
-                    shlex::quote(file)
-                ),
+            Some(file) => format!(
+                "run {} < {}",
+                shell_join(&prog_args[1..]),
+                shlex::quote(file)
+            ),
             None => String::from("run"),
         };
 
         // TODO: memory limit?
         #[rustfmt::rustfmt_skip]
         let gdb_args = vec_of_strings!(
-            "--nx", "--batch",
+            "--nx",
+            "--batch",
             // FIXME: index cache is a bit unreliable on earlier GDB versions
             //"-iex", "set index-cache on",
             //"-iex", "set index-cache directory gdb_cache",
 
             // Make special effort to get target output WITHOUT any GDB logging
-            "-iex", "set print inferior-events off",
+            "-iex",
+            "set print inferior-events off",
             // Get detailed python errors
-            "-iex", "set python print-stack full",
+            "-iex",
+            "set python print-stack full",
             // Markers will not print if logging is to /dev/null
-            "-ex", MARKER_CHILD_OUTPUT.gdb_start,
-            "-ex", "set logging file /dev/null",
-            "-ex", "set logging redirect on",
-            "-ex", "set logging on",
-            "-ex", gdb_run_command,
-            "-ex", "set logging redirect off",
-            "-ex", "set logging off",
-            "-ex", MARKER_CHILD_OUTPUT.gdb_end,
-            "-ex", MARKER_BACKTRACE.gdb_start,
-            "-x", triage_script_path.to_str().unwrap(),
-            "-ex", "gdbtriage",
-            "-ex", MARKER_BACKTRACE.gdb_end,
+            "-ex",
+            MARKER_CHILD_OUTPUT.gdb_start,
+            "-ex",
+            "set logging file /dev/null",
+            "-ex",
+            "set logging redirect on",
+            "-ex",
+            "set logging on",
+            "-ex",
+            gdb_run_command,
+            "-ex",
+            "set logging redirect off",
+            "-ex",
+            "set logging off",
+            "-ex",
+            MARKER_CHILD_OUTPUT.gdb_end,
+            "-ex",
+            MARKER_BACKTRACE.gdb_start,
+            "-x",
+            triage_script_path.to_str().unwrap(),
+            "-ex",
+            "gdbtriage",
+            "-ex",
+            MARKER_BACKTRACE.gdb_end,
             "--args"
         );
 
         let gdb_cmdline = &[&gdb_args[..], prog_args].concat();
 
         // Never write to stdin for GDB as it can pass testcases to the target using "run < FILE"
-        let output =
-            match process::execute_capture_output_timeout(&self.gdb_path, gdb_cmdline, timeout_ms, None) {
-                Ok(o) => o,
-                Err(e) => {
-                    return if e.kind() == ErrorKind::TimedOut {
-                        Err(GdbTriageError::new(
-                            GdbTriageErrorKind::Timeout,
-                            "Timed out when triaging",
-                            e.to_string(),
-                        ))
-                    } else {
-                        Err(GdbTriageError::new(
-                            GdbTriageErrorKind::Command,
-                            "Failed to execute GDB command",
-                            e.to_string(),
-                        ))
-                    };
-                }
-            };
+        let output = match process::execute_capture_output_timeout(
+            &self.gdb_path,
+            gdb_cmdline,
+            timeout_ms,
+            None,
+        ) {
+            Ok(o) => o,
+            Err(e) => {
+                return if e.kind() == ErrorKind::TimedOut {
+                    Err(GdbTriageError::new(
+                        GdbTriageErrorKind::Timeout,
+                        "Timed out when triaging",
+                        e.to_string(),
+                    ))
+                } else {
+                    Err(GdbTriageError::new(
+                        GdbTriageErrorKind::Command,
+                        "Failed to execute GDB command",
+                        e.to_string(),
+                    ))
+                };
+            }
+        };
 
         let decoded_stdout = &output.stdout;
         let decoded_stderr = &output.stderr;
 
         if show_raw_output {
-            let gdb_cmd_fmt = shell_join(
-                &[std::slice::from_ref(&self.gdb_path), gdb_cmdline]
-                    .concat()
-            );
+            let gdb_cmd_fmt =
+                shell_join(&[std::slice::from_ref(&self.gdb_path), gdb_cmdline].concat());
             println!("--- RAW GDB BEGIN ---\nPROGRAM CMDLINE: {}\nGDB CMDLINE: {}\nSTDOUT:\n{}\nSTDERR:\n{}\n--- RAW GDB END ---",
                 shell_join(&prog_args[..]), gdb_cmd_fmt, decoded_stdout, decoded_stderr);
         }
@@ -586,7 +623,7 @@ impl GdbTriager {
             if exit_code != 0 {
                 return Err(GdbTriageError::new_brief(
                     GdbTriageErrorKind::Command,
-                    format!("GDB exited with non-zero code {}", exit_code.to_string())
+                    format!("GDB exited with non-zero code {}", exit_code.to_string()),
                 ));
             }
         }
@@ -595,9 +632,11 @@ impl GdbTriager {
         if let Some(signal) = output.status.signal() {
             return Err(GdbTriageError::new_brief(
                 GdbTriageErrorKind::Command,
-                format!("GDB exited via signal {} ({})!",
-                    signal_to_string(signal), signal.to_string()
-                )
+                format!(
+                    "GDB exited via signal {} ({})!",
+                    signal_to_string(signal),
+                    signal.to_string()
+                ),
             ));
         }
 

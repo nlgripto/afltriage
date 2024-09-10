@@ -46,6 +46,7 @@ use is_executable::IsExecutable;
 use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -977,8 +978,19 @@ fn main_wrapper() -> i32 {
                         });
                     }
                     if report_output_formats.contains(&ReportOutputFormat::rawjson) {
-                        let report_val = serde_json::to_value(&triage).unwrap();
+                        let mut report_val = serde_json::to_value(&triage).unwrap();
                         let mut wrapper_val = serde_json::to_value(&envelope).unwrap();
+
+                         // Convert GdbChildOutput to GdbChildOutputRawReport
+                        if let Some(report_obj) = report_val.as_object_mut() {
+                        if let Some(child_value) = report_obj.get_mut("child") {
+                        if let Value::Object(child_obj) = child_value {
+                        child_obj.remove("stderr");
+                        child_obj.remove("stdout");
+            }
+        }
+    }
+
                         wrapper_val.as_object_mut().unwrap().insert("report".into(), report_val);
                         let rendered = serde_json::to_string_pretty(&wrapper_val).unwrap();
 
