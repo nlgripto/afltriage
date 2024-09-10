@@ -280,6 +280,21 @@ pub struct GdbChildOutput {
     pub stdout: String,
     pub stderr: String,
 }
+// Create a new struct for serialization that excludes stderr
+#[derive(Serialize)]
+struct GdbChildOutputRawReport {
+    stdout: String,
+    // Include other fields you want in the report, but omit stderr
+}
+
+impl From<GdbChildOutput> for GdbChildOutputRawReport {
+    fn from(child: GdbChildOutput) -> Self {
+        GdbChildOutputRawReport {
+            stdout: child.stdout,
+            // Copy other fields as needed
+        }
+    }
+}
 
 /// What type of GDBTriage error occurred
 #[derive(Debug, PartialEq, Eq, Hash)]
